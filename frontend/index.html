@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AI Avatar - VRM модель с голосом</title>
+    <style>
+        body {
+            margin: 0;
+            background: #1a1a2e;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #status-bar {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 30px;
+            z-index: 100;
+            font-size: 14px;
+            backdrop-filter: blur(10px);
+            font-family: monospace;
+        }
+        #speech-bubble {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.85);
+            border-radius: 20px;
+            padding: 12px 20px;
+            z-index: 100;
+            opacity: 0;
+            transition: opacity 0.3s;
+            max-width: 400px;
+            color: white;
+            backdrop-filter: blur(10px);
+            border-left: 4px solid #4a90e2;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        .visible { opacity: 1 !important; }
+        #input-container {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80%;
+            max-width: 600px;
+            z-index: 100;
+            display: flex;
+            gap: 10px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 50px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        #message-input {
+            flex: 1;
+            padding: 15px 20px;
+            border: none;
+            border-radius: 30px;
+            background: rgba(255,255,255,0.1);
+            color: white;
+            font-size: 16px;
+            outline: none;
+        }
+        #message-input::placeholder {
+            color: rgba(255,255,255,0.5);
+        }
+        #send-button {
+            width: 50px;
+            height: 50px;
+            border: none;
+            border-radius: 50%;
+            background: #4a90e2;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #send-button:hover { transform: scale(1.05); background: #357abd; }
+        
+        #mic-button {
+            width: 50px;
+            height: 50px;
+            border: none;
+            border-radius: 50%;
+            background: #e24a4a;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        #mic-button:hover { transform: scale(1.05); background: #cc3333; }
+        #mic-button.recording { background: #ff0000; animation: pulse 1s infinite; }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        
+        #emotion-indicator { margin-left: 10px; font-size: 20px; }
+        .animation-panel {
+            position: absolute;
+            bottom: 120px;
+            right: 20px;
+            background: rgba(0,0,0,0.8);
+            padding: 10px;
+            border-radius: 10px;
+            z-index: 100;
+            display: flex;
+            gap: 10px;
+            backdrop-filter: blur(10px);
+        }
+        .anim-btn {
+            padding: 8px 15px;
+            background: #4a90e2;
+            border: none;
+            border-radius: 20px;
+            color: white;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .anim-btn:hover { background: #357abd; }
+    </style>
+</head>
+<body>
+    <div id="status-bar">
+        <span id="status-text">Загрузка...</span>
+        <span id="emotion-indicator">😐</span>
+    </div>
+    <div id="speech-bubble"><p id="speech-text">...</p></div>
+    <div id="input-container">
+        <input type="text" id="message-input" placeholder="Напишите сообщение..." autocomplete="off">
+        <button id="send-button">➤</button>
+        <button id="mic-button">🎤</button>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.webgpu.js",
+                "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.webgpu.js",
+                "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.tsl.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+                "@pixiv/three-vrm": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/three-vrm.module.js",
+                "@pixiv/three-vrm/nodes": "https://cdn.jsdelivr.net/npm/@pixiv/three-vrm@3/lib/nodes/index.module.js"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three/webgpu';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import { VRMLoaderPlugin, MToonMaterialLoaderPlugin, VRMUtils } from '@pixiv/three-vrm';
+        import { MToonNodeMaterial } from '@pixiv/three-vrm/nodes';
+        import { loadMixamoAnimation } from './loadMixamoAnimation.js';
+
+        const renderer = new THREE.WebGPURenderer();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        const camera = new THREE.PerspectiveCamera(30, window.innerWidth / window.innerHeight, 0.1, 20);
+        camera.position.set(0, 1.2, 3.5);
+
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.screenSpacePanning = true;
+        controls.target.set(0, 1.2, 0);
+        controls.enableDamping = true;
+        controls.update();
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x1a1a2e);
+
+        const ambientLight = new THREE.AmbientLight(0x404060);
+        scene.add(ambientLight);
+        
+        const mainLight = new THREE.DirectionalLight(0xffffff, Math.PI);
+        mainLight.position.set(1, 2, 2);
+        scene.add(mainLight);
+        
+        const fillLight = new THREE.DirectionalLight(0x88aaff, 0.5);
+        fillLight.position.set(-1, 1, 1);
+        scene.add(fillLight);
+        
+        const backLight = new THREE.DirectionalLight(0xffaa88, 0.3);
+        backLight.position.set(0, 1, -2);
+        scene.add(backLight);
+
+        let currentVrm = null;
+        let vrmExpressionManager = null;
+        let isSpeaking = false;
+        let speechTimer = null;
+        let animationMixer = null;
+        let currentAction = null;
+        
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+
+        const loader = new GLTFLoader();
+        loader.crossOrigin = 'anonymous';
+
+        loader.register((parser) => {
+            const mtoonMaterialPlugin = new MToonMaterialLoaderPlugin(parser, {
+                materialType: MToonNodeMaterial,
+            });
+            return new VRMLoaderPlugin(parser, { mtoonMaterialPlugin });
+        });
+
+        const VRM_URL = '/model/rt.vrm';
+
+        async function loadAnimations() {
+            if (!currentVrm) return;
+            
+            animationMixer = new THREE.AnimationMixer(currentVrm.scene);
+            
+            const animationsToLoad = [
+                { name: 'idle', url: '/animations/Idle.fbx', loop: true },
+                { name: 'sitting', url: '/animations/Female Sitting Pose.fbx', loop: true },
+                { name: 'laying', url: '/animations/Female Laying Pose.fbx', loop: true }
+            ];
+            
+            for (const anim of animationsToLoad) {
+                try {
+                    const clip = await loadMixamoAnimation(anim.url, currentVrm);
+                    const action = animationMixer.clipAction(clip);
+                    
+                    if (anim.loop) {
+                        action.setLoop(THREE.LoopRepeat);
+                    } else {
+                        action.setLoop(THREE.LoopOnce);
+                    }
+                    
+                    window.animations = window.animations || {};
+                    window.animations[anim.name] = action;
+                } catch (error) {}
+            }
+            
+            if (window.animations?.idle) {
+                playAnimation('idle');
+            }
+        }
+
+        function playAnimation(name) {
+            if (!window.animations || !window.animations[name]) return;
+            
+            if (currentAction) {
+                currentAction.stop();
+            }
+            
+            currentAction = window.animations[name];
+            currentAction.reset().play();
+        }
+
+        function setVrmExpression(emotion, intensity = 0.8) {
+            if (!vrmExpressionManager) return;
+            
+            const map = {
+                'happy': 'joy', 'sad': 'sorrow', 'angry': 'anger',
+                'surprised': 'surprise', 'calm': 'neutral'
+            };
+            const target = map[emotion] || 'neutral';
+            
+            try {
+                if (target !== 'neutral') {
+                    vrmExpressionManager.setValue('neutral', 0.3);
+                }
+                vrmExpressionManager.setValue(target, intensity);
+            } catch(e) {}
+        }
+
+        function resetVrmExpression() {
+            if (!vrmExpressionManager) return;
+            try {
+                vrmExpressionManager.setValue('neutral', 1.0);
+            } catch(e) {}
+        }
+
+        function setVrmMouthOpen(intensity) {
+            if (!vrmExpressionManager) return;
+            try {
+                vrmExpressionManager.setValue('aa', intensity);
+            } catch(e) {}
+        }
+
+        function startBlinking() {
+            setInterval(() => {
+                if (vrmExpressionManager && !isSpeaking) {
+                    try {
+                        vrmExpressionManager.setValue('blink', 1.0);
+                        setTimeout(() => {
+                            if (vrmExpressionManager) vrmExpressionManager.setValue('blink', 0);
+                        }, 150);
+                    } catch(e) {}
+                }
+            }, 4000);
+        }
+
+        function animateMouth(visemes, totalDuration) {
+            if (!vrmExpressionManager) return;
+            
+            isSpeaking = true;
+            setVrmMouthOpen(0);
+            
+            visemes.forEach(v => {
+                setTimeout(() => {
+                    if (!vrmExpressionManager || !isSpeaking) return;
+                    let intensity = 0;
+                    switch(v.viseme) {
+                        case 'A': intensity = 0.7; break;
+                        case 'O': intensity = 0.6; break;
+                        case 'U': intensity = 0.5; break;
+                        case 'I': intensity = 0.4; break;
+                        default: intensity = 0.2;
+                    }
+                    setVrmMouthOpen(intensity);
+                }, v.start * 1000);
+            });
+            
+            if (speechTimer) clearTimeout(speechTimer);
+            speechTimer = setTimeout(() => {
+                isSpeaking = false;
+                setVrmMouthOpen(0);
+                resetVrmExpression();
+            }, totalDuration + 200);
+        }
+
+        function loadVRM(url) {
+            updateStatus('Загрузка VRM...');
+
+            loader.load(
+                url,
+                async (gltf) => {
+                    const vrm = gltf.userData.vrm;
+                    
+                    VRMUtils.removeUnnecessaryVertices(gltf.scene);
+                    VRMUtils.combineSkeletons(gltf.scene);
+                    VRMUtils.combineMorphs(vrm);
+                    
+                    if (currentVrm) {
+                        scene.remove(currentVrm.scene);
+                        VRMUtils.deepDispose(currentVrm.scene);
+                    }
+                    
+                    vrm.scene.traverse(obj => { obj.frustumCulled = false; });
+                    
+                    currentVrm = vrm;
+                    vrmExpressionManager = vrm.expressionManager;
+                    
+                    if (vrm.lookAt) {
+                        vrm.lookAt.target = camera;
+                    }
+                    
+                    scene.add(vrm.scene);
+                    vrm.scene.position.set(0, -0.8, 0);
+                    vrm.scene.scale.set(1.2, 1.2, 1.2);
+                    
+                    await loadAnimations();
+                    startBlinking();
+                    
+                    updateStatus('VRM готова');
+                },
+                (progress) => {
+                    const percent = Math.round((progress.loaded / progress.total) * 100);
+                    updateStatus(`Загрузка: ${percent}%`);
+                },
+                (error) => {
+                    updateStatus('Ошибка загрузки VRM');
+                }
+            );
+        }
+
+        const speechBubble = document.getElementById('speech-bubble');
+        const speechText = document.getElementById('speech-text');
+        let hideSpeechTimeout = null;
+
+        function showSpeechText(text, duration = 4000) {
+            if (hideSpeechTimeout) clearTimeout(hideSpeechTimeout);
+            speechText.textContent = text;
+            speechBubble.classList.add('visible');
+            hideSpeechTimeout = setTimeout(() => {
+                speechBubble.classList.remove('visible');
+            }, duration);
+        }
+
+        function updateEmotionIndicator(emotion) {
+            const map = { 'happy': '😊', 'sad': '😢', 'angry': '😠', 'surprised': '😲', 'calm': '😐' };
+            const el = document.getElementById('emotion-indicator');
+            if (el) el.textContent = map[emotion] || '😐';
+        }
+
+        function updateStatus(text) {
+            const el = document.getElementById('status-text');
+            if (el) el.textContent = text;
+        }
+
+        async function startRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                audioChunks = [];
+                
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    const webmBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    const wavBlob = await convertWebMToWav(webmBlob);
+                    
+                    const reader = new FileReader();
+                    reader.readAsDataURL(wavBlob);
+                    reader.onloadend = () => {
+                        const base64Audio = reader.result.split(',')[1];
+                        ws.send(JSON.stringify({ type: 'audio', audio: base64Audio }));
+                        updateStatus('Отправлено на распознавание...');
+                    };
+                    
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                mediaRecorder.start();
+                isRecording = true;
+                const micBtn = document.getElementById('mic-button');
+                micBtn.classList.add('recording');
+                updateStatus('Говорите...');
+                
+                setTimeout(() => {
+                    if (isRecording) stopRecording();
+                }, 5000);
+                
+            } catch (error) {
+                updateStatus('Нет доступа к микрофону');
+            }
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                const micBtn = document.getElementById('mic-button');
+                micBtn.classList.remove('recording');
+            }
+        }
+
+        async function convertWebMToWav(webmBlob) {
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const arrayBuffer = await webmBlob.arrayBuffer();
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+            const wavBlob = audioBufferToWav(audioBuffer);
+            audioContext.close();
+            return wavBlob;
+        }
+
+        function audioBufferToWav(buffer) {
+            const numChannels = buffer.numberOfChannels;
+            const sampleRate = buffer.sampleRate;
+            const format = 1;
+            const bitDepth = 16;
+            
+            let samples = buffer.getChannelData(0);
+            if (numChannels > 1) {
+                const rightSamples = buffer.getChannelData(1);
+                samples = samples.map((left, i) => (left + rightSamples[i]) / 2);
+            }
+            
+            const dataLength = samples.length * (bitDepth / 8);
+            const bufferLength = 44 + dataLength;
+            const arrayBuffer = new ArrayBuffer(bufferLength);
+            const view = new DataView(arrayBuffer);
+            
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, bufferLength - 8, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, format, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * (bitDepth / 8), true);
+            view.setUint16(32, bitDepth / 8, true);
+            view.setUint16(34, bitDepth, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, dataLength, true);
+            
+            let offset = 44;
+            for (let i = 0; i < samples.length; i++) {
+                const sample = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                offset += 2;
+            }
+            
+            return new Blob([arrayBuffer], { type: 'audio/wav' });
+        }
+
+        function writeString(view, offset, str) {
+            for (let i = 0; i < str.length; i++) {
+                view.setUint8(offset + i, str.charCodeAt(i));
+            }
+        }
+
+        const clientId = 'client_' + Math.random().toString(36).substring(2, 10);
+        const ws = new WebSocket(`ws://localhost:8000/ws/${clientId}`);
+
+        ws.onopen = () => {
+            updateStatus('Подключено');
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            
+            if (data.type === 'speak') {
+                const responseText = data.text;
+                const emotion = data.emotion || 'calm';
+                
+                updateStatus('Говорит...');
+                updateEmotionIndicator(emotion);
+                setVrmExpression(emotion, data.intensity || 0.7);
+                showSpeechText(responseText, 4000);
+                
+                const visemes = data.visemes || [];
+                const totalDuration = visemes.length > 0 ? visemes[visemes.length-1].start * 1000 + 1000 : 3000;
+                animateMouth(visemes, totalDuration);
+                
+                setTimeout(() => {
+                    updateStatus('Готов');
+                }, totalDuration + 500);
+            }
+            
+            if (data.type === 'status' && data.status === 'thinking') {
+                updateStatus('Думает...');
+                showSpeechText('Думаю...', 2000);
+            }
+            
+            if (data.type === 'error') {
+                updateStatus('Ошибка: ' + data.message);
+            }
+        };
+
+        ws.onerror = () => updateStatus('Ошибка WS');
+        ws.onclose = () => updateStatus('Отключено');
+
+        function sendMessage() {
+            const input = document.getElementById('message-input');
+            const text = input.value.trim();
+            if (text && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'text', text: text }));
+                input.value = '';
+                updateStatus('Отправлено');
+                showSpeechText(text, 1500);
+            }
+        }
+
+        document.getElementById('send-button').onclick = sendMessage;
+        document.getElementById('message-input').onkeypress = (e) => {
+            if (e.key === 'Enter') sendMessage();
+        };
+        
+        document.getElementById('mic-button').onclick = () => {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        };
+
+        const panel = document.createElement('div');
+        panel.className = 'animation-panel';
+        panel.innerHTML = `
+            <button class="anim-btn" id="anim-idle">Idle</button>
+            <button class="anim-btn" id="anim-sitting">Сидеть</button>
+            <button class="anim-btn" id="anim-laying">Лежать</button>
+        `;
+        document.body.appendChild(panel);
+
+        document.getElementById('anim-idle').onclick = () => playAnimation('idle');
+        document.getElementById('anim-sitting').onclick = () => playAnimation('sitting');
+        document.getElementById('anim-laying').onclick = () => playAnimation('laying');
+
+        const clock = new THREE.Clock();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            const delta = Math.min(clock.getDelta(), 0.033);
+            
+            if (currentVrm) {
+                currentVrm.update(delta);
+            }
+            
+            if (animationMixer) {
+                animationMixer.update(delta);
+            }
+            
+            controls.update();
+            renderer.renderAsync(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        loadVRM(VRM_URL);
+    </script>
+</body>
+</html>
